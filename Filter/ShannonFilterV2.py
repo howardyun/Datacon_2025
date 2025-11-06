@@ -1,7 +1,9 @@
 import math
 import os
 import sys
+import json
 from collections import Counter
+# python3 Filter/ShannonFilterV2.py TestData/all_files_hash 5
 
 
 def calculate_shannon_entropy(data):
@@ -67,31 +69,35 @@ def scan_directory(directory_path, entropy_threshold=5.0):
             is_high_entropy, entropy_value = analyze_file(file_path, entropy_threshold)
 
             if is_high_entropy:
-                high_entropy_files.append({
-                    'filename': file,  # 只记录hash文件名
-                    'filepath': file_path.split('/')[-1],
-                    'entropy': entropy_value
-                })
-                print(f"高熵文件 detected: {file} (熵值: {entropy_value:.4f})")
+                file_info = {
+                    'filename': file,  # hash文件名
+                    'filepath': file_path,
+                    'entropy': round(entropy_value, 4),
+                    'size': os.path.getsize(file_path)
+                }
+                high_entropy_files.append(file_info)
+                print(f"High entropy file detected: {file} (entropy: {entropy_value:.4f})")
 
     return high_entropy_files
 
 
-def save_results(high_entropy_files, output_file="high_entropy_files.txt"):
+def save_results_to_json(high_entropy_files, output_file="high_entropy_files.json"):
     """
-    将高熵文件名保存到文件
+    将高熵文件信息保存为JSON格式
     """
+    result_data = {
+        "scan_summary": {
+            "total_files_scanned": len(high_entropy_files),
+            "entropy_threshold_used": entropy_threshold,
+            "scan_timestamp": None  # 可以在main函数中设置
+        },
+        "high_entropy_files": high_entropy_files
+    }
+
     with open(output_file, 'w', encoding='utf-8') as f:
-        f.write("高熵文件列表:\n")
-        f.write("=" * 50 + "\n")
+        json.dump(result_data, f, ensure_ascii=False, indent=2)
 
-        for file_info in high_entropy_files:
-            f.write(f"文件名: {file_info['filename']}\n")
-            f.write(f"完整路径: {file_info['filepath']}\n")
-            f.write(f"熵值: {file_info['entropy']:.4f}\n")
-            f.write("-" * 30 + "\n")
-
-    print(f"\n结果已保存到: {output_file}")
+    print(f"Results saved to: {output_file}")
 
 
 def main():
@@ -99,47 +105,57 @@ def main():
     主函数
     """
     if len(sys.argv) < 2:
-        print("使用方法: python entropy_scanner.py <目录路径> [熵阈值]")
-        print("示例: python entropy_scanner.py ./files 5.0")
+        print("Usage: python entropy_scanner.py <directory_path> [entropy_threshold]")
+        print("Example: python entropy_scanner.py ./files 5.0")
         return
 
     directory_path = sys.argv[1]
 
     # 设置熵阈值，默认为5.0
+    global entropy_threshold
     entropy_threshold = 5.0
     if len(sys.argv) > 2:
         try:
             entropy_threshold = float(sys.argv[2])
         except ValueError:
-            print("警告: 无效的熵阈值，使用默认值5.0")
+            print("Warning: Invalid entropy threshold, using default value 5.0")
 
     if not os.path.isdir(directory_path):
-        print(f"错误: 目录不存在: {directory_path}")
+        print(f"Error: Directory does not exist: {directory_path}")
         return
 
-    print(f"开始扫描目录: {directory_path}")
-    print(f"熵阈值: {entropy_threshold}")
+    print(f"Scanning directory: {directory_path}")
+    print(f"Entropy threshold: {entropy_threshold}")
     print("-" * 50)
 
     # 扫描目录
     high_entropy_files = scan_directory(directory_path, entropy_threshold)
 
     # 输出摘要
-    print(f"\n扫描完成!")
-    print(f"总发现高熵文件: {len(high_entropy_files)} 个")
+    print(f"\nScan completed!")
+    print(f"Total high entropy files found: {len(high_entropy_files)}")
 
     if high_entropy_files:
         # 按熵值排序
         high_entropy_files.sort(key=lambda x: x['entropy'], reverse=True)
 
-        print("\n高熵文件列表 (按熵值降序):")
+        print("\nHigh entropy files (sorted by entropy):")
         for file_info in high_entropy_files:
-            print(f"  {file_info['filename']} - 熵值: {file_info['entropy']:.4f}")
+            print(f"  {file_info['filename']} - entropy: {file_info['entropy']}")
 
-        # 保存结果到文件
-        save_results(high_entropy_files)
+        # 保存结果到JSON文件
+        save_results_to_json(high_entropy_files)
+
+        # 也保存一个简化的版本，只包含文件名
+        simplified_result = {
+            "high_entropy_filenames": [file_info['filename'] for file_info in high_entropy_files]
+        }
+        with open("high_entropy_filenames.json", 'w', encoding='utf-8') as f:
+            json.dump(simplified_result, f, ensure_ascii=False, indent=2)
+        print("Simplified filename list saved to: high_entropy_filenames.json")
+
     else:
-        print("未发现高熵文件")
+        print("No high entropy files found")
 
 
 if __name__ == "__main__":
