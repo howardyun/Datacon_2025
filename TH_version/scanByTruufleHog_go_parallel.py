@@ -38,13 +38,15 @@ def scan_with_trufflehog(folder_path):
     :return: 仓库名称和扫描结果 (JSON 格式字符串)，如果没有结果返回 None
     """
     try:
-        # 执行 TruffleHog 扫描
-        result = subprocess.run(
-            [
-                "trufflehog", "filesystem",
+        cmd=[
+                "/home/szk/.local/bin/trufflehog", "filesystem",
                 folder_path,
                 "--results=verified,unknown", "--json"
-            ],
+            ]
+        cmd_str = " ".join(cmd)
+        # 执行 TruffleHog 扫描
+        result = subprocess.run(
+            cmd_str,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -63,8 +65,8 @@ def scan_with_trufflehog(folder_path):
             return None  # 返回空表示没有结果
         else:
             print(f"发现敏感信息: {folder_path}")
-            merged_json = {"findings": json_objects}
-            return os.path.basename(folder_path), json.dumps(merged_json, indent=2)
+            merged_json=extractTokenandFile(json.dumps({"findings": json_objects}))
+            return os.path.basename(folder_path), merged_json
 
     except Exception as e:
         print(f"扫描时发生错误: {e}")
@@ -77,126 +79,66 @@ def save_to_json(data, output_json_path):
     :param data: 扫描结果列表，每项为 (仓库名称, 扫描结果 JSON 字符串)
     :param output_json_path: 保存的 JSON 文件路径
     """
-    # 转换为 JSON 数组的格式
-    json_array = [{"Repository Name": name, "Scan Results": json.loads(results)} for name, results in data]
 
     # 写入 JSON 文件
     with open(output_json_path, "w", encoding="utf-8") as jsonfile:
-        json.dump(json_array, jsonfile, indent=4, ensure_ascii=False)
+        json.dump(data, jsonfile, indent=4, ensure_ascii=False)
 
     print(f"结果已保存到 JSON 文件: {output_json_path}")
 
 
-def save_to_csv(data, output_csv_path):
+def process_single_folder_parallel_json(folder_path, output_dir, max_workers=4):
     """
-    将扫描结果保存到 CSV 文件
-    :param data: 扫描结果列表，每项为 (仓库名称, 扫描结果 JSON 字符串)
-    :param output_csv_path: 保存的 CSV 文件路径
-    """
-    # 写入 CSV 文件
-    with open(output_csv_path, "w", newline="", encoding="utf-8") as csvfile:
-        csv_writer = csv.writer(csvfile)
-        # 写入表头
-        csv_writer.writerow(["Repository Name", "Scan Results"])
-        # 写入每一行数据
-        csv_writer.writerows(data)
-    print(f"结果已保存到 CSV 文件: {output_csv_path}")
-
-
-def process_single_folder_parallel_csv(folder_path, output_dir, max_workers=4):
-    """
-    单独处理一个大文件夹，并行扫描其下的子文件夹（仓库）
-    :param folder_path: 要处理的大文件夹路径
+    单独处理一个文件夹，并行扫描其下的所有文件（而非子文件夹），并将结果保存为 JSON 数组
+    :param folder_path: 要处理的文件夹路径
     :param output_dir: 保存结果的根目录
     :param max_workers: 最大并行线程数
     """
     print(f"正在并行处理文件夹: {folder_path}")
     scan_results = []  # 用于存储扫描结果
-    subfolders = [
-        os.path.join(folder_path, subfolder)
-        for subfolder in os.listdir(folder_path)
-        if os.path.isdir(os.path.join(folder_path, subfolder))
+    
+    # 关键修改：筛选文件夹下的所有文件（而非子文件夹）
+    files = [
+        os.path.join(folder_path, file_name)
+        for file_name in os.listdir(folder_path)
+        if os.path.isfile(os.path.join(folder_path, file_name))  # 替换 isdir 为 isfile
     ]
-    print('chuliwanc')
-    # 使用线程池并行扫描
+
+    # 使用线程池并行扫描文件
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_subfolder = {
-            executor.submit(scan_with_trufflehog, subfolder): subfolder
-            for subfolder in subfolders
+        # 关键修改：任务对象映射为“任务-文件路径”
+        future_to_file = {
+            executor.submit(scan_with_trufflehog, file_path): file_path
+            for file_path in files
         }
 
-        for future in as_completed(future_to_subfolder):
-            subfolder = future_to_subfolder[future]
+        for future in as_completed(future_to_file):
+            file_path = future_to_file[future]
             try:
                 result = future.result()
                 if result:  # 如果有扫描结果
-                    repository_name, scan_result = result
-                    extract_info = extractTokenandFile(scan_result)
-                    scan_result = str(scan_result)[:3000]
-                    scan_results.append([repository_name.replace("_", "/"), str(scan_result),str(extract_info)])
+                    # 关键修改：用文件名替代原仓库名，保持结果格式逻辑
+                    file_name = os.path.basename(file_path)
+                    for i in result[1]:
+                        scan_results.append({"file_hash": file_name, "value": i.get('raw')})
             except Exception as e:
-                print(f"扫描 {subfolder} 时发生错误: {e}")
+                print(f"扫描文件 {file_path} 时发生错误: {e}")
 
-    # 如果有扫描结果，保存到 CSV
+    # 保存结果逻辑不变（仅文件名前缀仍用文件夹名，可按需调整）
     if scan_results:
         folder_name = os.path.basename(folder_path)
-        output_csv_path = os.path.join(output_dir, f"{folder_name}_scan_results.csv")
-        save_to_csv(scan_results, output_csv_path)
+        output_json_path = os.path.join(output_dir, f"{folder_name}_file_scan_results.json")
+        save_to_json(scan_results, output_json_path)
+        print(f"扫描结果已保存至: {output_json_path}")
     else:
-        print(f"没有在 {folder_path} 中找到任何敏感信息。")
-
-# def process_single_folder_parallel_json(folder_path, output_dir, max_workers=4):
-#     """
-#     单独处理一个大文件夹，并行扫描其下的子文件夹（仓库），并将结果保存为 JSON 数组
-#     :param folder_path: 要处理的大文件夹路径
-#     :param output_dir: 保存结果的根目录
-#     :param max_workers: 最大并行线程数
-#     """
-#     print(f"正在并行处理文件夹: {folder_path}")
-#     scan_results = []  # 用于存储扫描结果
-#     subfolders = [
-#         os.path.join(folder_path, subfolder)
-#         for subfolder in os.listdir(folder_path)
-#         if os.path.isdir(os.path.join(folder_path, subfolder))
-#     ]
-#
-#     # 使用线程池并行扫描
-#     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-#         future_to_subfolder = {
-#             executor.submit(scan_with_trufflehog, subfolder): subfolder
-#             for subfolder in subfolders
-#         }
-#
-#         for future in as_completed(future_to_subfolder):
-#             subfolder = future_to_subfolder[future]
-#             try:
-#                 result = future.result()
-#                 if result:  # 如果有扫描结果
-#                     repository_name, scan_result = result
-#                     scan_results.append({"Repository Name": repository_name.replace("_", "/"), "Scan Results": json.loads(scan_result)})
-#             except Exception as e:
-#                 print(f"扫描 {subfolder} 时发生错误: {e}")
-#
-#     # 如果有扫描结果，保存到 JSON 文件
-#     if scan_results:
-#         folder_name = os.path.basename(folder_path)
-#         output_json_path = os.path.join(output_dir, f"{folder_name}_scan_results.json")
-#         save_to_json(scan_results, output_json_path)
-#     else:
-#         print(f"没有在 {folder_path} 中找到任何敏感信息。")
+        print(f"没有在 {folder_path} 的文件中找到任何敏感信息。")
 
 
 
 if __name__ == "__main__":
     # 定义根目录和输出结果根目录
-    trufflehog_output_dir = "E:/download_space/trufflehog_scan_results_new"
+    trufflehog_output_dir = "/home/szk/datacon2025_result"
     os.makedirs(trufflehog_output_dir, exist_ok=True)  # 如果目录不存在，则创建
 
-    # 示例：并行扫描一个新添加的文件夹（例如 "E:/download_space/2024-12"）
-    for i in range(1,3):
-        new_folder_path = ''
-        if i <10:
-            new_folder_path = "E:/download_space/2025-0"+str(i)
-        else:
-            new_folder_path = "E:/download_space/2025-" + str(i)
-        process_single_folder_parallel_csv(new_folder_path, trufflehog_output_dir, max_workers=8)
+
+    process_single_folder_parallel_json("/home/szk/all_files_hash", trufflehog_output_dir, max_workers=10)
